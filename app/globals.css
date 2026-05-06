@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html, body {
+  background: #FAF9F7;
+  color: #1F1C16;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01", "cv11";
+}
+
+* { box-sizing: border-box; }
+
+button { font-family: inherit; }
+
+input, textarea, select {
+  font-family: inherit;
+}
