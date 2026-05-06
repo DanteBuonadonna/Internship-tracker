@@ -13,6 +13,7 @@ export default function SearchTab({ profile, onAdded }: { profile: Profile; onAd
   const [industry, setIndustry] = useState('');
   const [exclude, setExclude] = useState('');
   const [limit, setLimit] = useState(20);
+  const [term, setTerm] = useState('any');
   const [searching, setSearching] = useState(false);
   const [jobs, setJobs] = useState<any[]>([]);
   const [status, setStatus] = useState('');
@@ -26,7 +27,7 @@ export default function SearchTab({ profile, onAdded }: { profile: Profile; onAd
       const res = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keywords, location, posted, workType, expLevel, companySize, industry, exclude, limit }),
+        body: JSON.stringify({ keywords, location, posted, workType, expLevel, companySize, industry, exclude, limit, term }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -64,9 +65,23 @@ export default function SearchTab({ profile, onAdded }: { profile: Profile; onAd
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Not authenticated');
 
+      // Defensive dedup: block adding a second contact at the same company.
+      const companyName = job.companyName || job.company || 'Unknown';
+      const { data: existing } = await supabase
+        .from('contacts')
+        .select('id, status')
+        .eq('user_id', user.id)
+        .ilike('company', companyName)
+        .limit(1);
+      if (existing && existing.length > 0) {
+        alert(`You already have a contact at ${companyName} (status: ${existing[0].status}). Skipping to avoid duplicate outreach.`);
+        setGenerating(null);
+        return;
+      }
+
       const { data: contact, error } = await supabase.from('contacts').insert({
         user_id: user.id,
-        company: job.companyName || job.company || 'Unknown',
+        company: companyName,
         job_title: job.title || job.jobTitle || '',
         job_url: job.applyUrl || job.jobUrl || '',
         job_location: job.location || '',
@@ -145,11 +160,26 @@ export default function SearchTab({ profile, onAdded }: { profile: Profile; onAd
             <Field label="Max results">
               <select value={limit} onChange={e => setLimit(parseInt(e.target.value))} className={inputCls}>
                 <option value={10}>10</option>
-                <option value={20}>20</option>
+                <option value={25}>25</option>
                 <option value={50}>50</option>
+                <option value={100}>100</option>
+                <option value={250}>250</option>
               </select>
             </Field>
           </div>
+
+          <Field label="Term (year + season)">
+            <select value={term} onChange={e => setTerm(e.target.value)} className={inputCls}>
+              <option value="any">Any term</option>
+              <option value="summer 2026">Summer 2026</option>
+              <option value="fall 2026">Fall 2026</option>
+              <option value="spring 2027">Spring 2027</option>
+              <option value="summer 2027">Summer 2027</option>
+              <option value="fall 2027">Fall 2027</option>
+              <option value="spring 2028">Spring 2028</option>
+              <option value="summer 2028">Summer 2028</option>
+            </select>
+          </Field>
 
           <Field label="Industry filter (optional)">
             <input value={industry} onChange={e => setIndustry(e.target.value)} className={inputCls} placeholder="e.g. fintech, AI, healthcare" />
@@ -172,26 +202,39 @@ export default function SearchTab({ profile, onAdded }: { profile: Profile; onAd
 
       {jobs.length > 0 && (
         <div className="space-y-2">
-          {jobs.map((j, i) => (
-            <div key={i} className="bg-white border border-ink-200 rounded-xl p-4">
-              <div className="font-medium text-sm">{j.title || j.jobTitle}</div>
-              <div className="text-xs text-ink-500 mt-0.5 mb-3">{j.companyName || j.company} · {j.location}</div>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => generateAndAdd(j, i)}
-                  disabled={generating === i}
-                  className="px-3 py-1.5 rounded-lg bg-ink-800 text-ink-50 text-xs font-medium hover:bg-ink-700 disabled:opacity-50"
-                >
-                  {generating === i ? 'Generating...' : 'Generate email + add'}
-                </button>
-                {(j.applyUrl || j.jobUrl) && (
-                  <a href={j.applyUrl || j.jobUrl} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-lg border border-ink-200 text-xs hover:bg-ink-50">
-                    View
-                  </a>
-                )}
+          {jobs.map((j, i) => {
+            const dup = j.alreadyInPipeline;
+            return (
+              <div key={i} className={`bg-white border rounded-xl p-4 ${dup ? 'border-ink-200 opacity-60' : 'border-ink-200'}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="font-medium text-sm">{j.title || j.jobTitle}</div>
+                    <div className="text-xs text-ink-500 mt-0.5 mb-3">{j.companyName || j.company} · {j.location}</div>
+                  </div>
+                  {dup && (
+                    <span className="shrink-0 text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-ink-100 text-ink-600 border border-ink-200">
+                      Already in pipeline{j.existingStatus ? ` · ${j.existingStatus}` : ''}
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => generateAndAdd(j, i)}
+                    disabled={generating === i || dup}
+                    title={dup ? 'A contact at this company already exists in your pipeline.' : ''}
+                    className="px-3 py-1.5 rounded-lg bg-ink-800 text-ink-50 text-xs font-medium hover:bg-ink-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {generating === i ? 'Generating...' : dup ? 'Already in pipeline' : 'Generate email + add'}
+                  </button>
+                  {(j.applyUrl || j.jobUrl) && (
+                    <a href={j.applyUrl || j.jobUrl} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-lg border border-ink-200 text-xs hover:bg-ink-50">
+                      View
+                    </a>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

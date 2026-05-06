@@ -13,6 +13,27 @@ export async function POST(req: NextRequest) {
 
   const { contactId, to, subject, body, fromName, fromEmail } = await req.json();
 
+  // Backstop dedup: refuse to send to a recipient that the user has already
+  // emailed under a different contact. Prevents accidental double outreach
+  // even if a duplicate slipped past the company-level check at draft time.
+  if (to) {
+    const { data: priorSends } = await supabase
+      .from('contacts')
+      .select('id, company, status')
+      .eq('user_id', session.user.id)
+      .ilike('contact_email', to)
+      .in('status', ['sent', 'replied', 'interview', 'offer']);
+    const otherSend = (priorSends || []).find((c) => c.id !== contactId);
+    if (otherSend) {
+      return NextResponse.json(
+        {
+          error: `You've already emailed ${to} (${otherSend.company}, status: ${otherSend.status}). Skipping to avoid duplicate outreach.`,
+        },
+        { status: 409 }
+      );
+    }
+  }
+
   const lines = [
     `From: ${fromName} <${fromEmail}>`,
     `To: ${to}`,

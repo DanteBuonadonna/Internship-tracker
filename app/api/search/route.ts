@@ -12,8 +12,13 @@ export async function POST(req: NextRequest) {
   const APIFY = process.env.APIFY_API_TOKEN;
   if (!APIFY) return NextResponse.json({ error: 'Apify not configured' }, { status: 500 });
 
+  // Build the search query, optionally appending a term (e.g. "summer 2027") so
+  // LinkedIn's own ranking surfaces term-matched listings first.
+  const term: string | undefined = filters.term && filters.term !== 'any' ? filters.term : undefined;
+  const queryParts = [filters.keywords, filters.industry, term].filter(Boolean);
+
   const input: any = {
-    queries: filters.industry ? `${filters.keywords} ${filters.industry}` : filters.keywords,
+    queries: queryParts.join(' '),
     location: filters.location || 'United States',
     count: filters.limit || 20,
   };
@@ -54,7 +59,45 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    return NextResponse.json({ jobs });
+    // Term filter: keep only jobs whose title/description mentions both the year and the season.
+    if (term) {
+      const t = term.toLowerCase();
+      const yearMatch = t.match(/\b(20\d{2})\b/);
+      const seasonMatch = t.match(/\b(summer|fall|autumn|spring|winter)\b/);
+      const year = yearMatch?.[1];
+      const season = seasonMatch?.[1];
+      jobs = jobs.filter((j: any) => {
+        const text = ((j.title || '') + ' ' + (j.description || '')).toLowerCase();
+        if (year && !text.includes(year)) return false;
+        if (season) {
+          // Treat "fall" and "autumn" as equivalent.
+          const altSeason = season === 'fall' ? 'autumn' : season === 'autumn' ? 'fall' : null;
+          if (!text.includes(season) && !(altSeason && text.includes(altSeason))) return false;
+        }
+        return true;
+      });
+    }
+
+    // Annotate jobs with whether the user already has a contact at this company,
+    // so the UI can disable "Generate + add" for duplicates.
+    const { data: existing } = await supabase
+      .from('contacts')
+      .select('company, contact_email, status')
+      .eq('user_id', user.id);
+    const existingCompanies = new Map<string, { status: string; contact_email: string }>();
+    (existing || []).forEach((c) => {
+      const key = (c.company || '').trim().toLowerCase();
+      if (key && !existingCompanies.has(key)) {
+        existingCompanies.set(key, { status: c.status, contact_email: c.contact_email });
+      }
+    });
+    const annotated = jobs.map((j: any) => {
+      const companyKey = (j.companyName || j.company || '').trim().toLowerCase();
+      const dup = companyKey ? existingCompanies.get(companyKey) : undefined;
+      return { ...j, alreadyInPipeline: !!dup, existingStatus: dup?.status || null };
+    });
+
+    return NextResponse.json({ jobs: annotated });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
